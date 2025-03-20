@@ -3,91 +3,59 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
-import Link from "next/link";
-
-interface Cocktail {
-  id: number;
-  name: string;
-  imageUrl: string;
-  instructions?: string;
-  category: string;
-  glass: string;
-  alcoholic: boolean;
-}
+import CocktailModal from "../components/CocktailModal";
+import CocktailCard from "../components/CocktailCard";
+import LoadingSpinner from "../components/LoadingSpinner";
+import { Cocktail } from "../app/types";
 
 async function fetchCocktails(
-  searchTerm: string,
   category: string,
   glass: string,
-  alcoholic: string
+  alcoholic: string,
+  page: number,
+  perPage: number
 ) {
-  let url = `https://cocktails.solvro.pl/api/v1/cocktails?page=1&perPage=50`;
+  let url = `https://cocktails.solvro.pl/api/v1/cocktails?page=${page}&perPage=${perPage}`;
   const params: Record<string, any> = {};
-  if (searchTerm.trim()) {
-    params.name = searchTerm;
-  }
-  if (category !== "All") {
-    params.category = category;
-  }
-  if (glass !== "All") {
-    params.glass = glass;
-  }
-  if (alcoholic !== "All") {
-    params.alcoholic = alcoholic === "Alcoholic" ? true : false;
-  }
+  if (category !== "All") params.category = category;
+  if (glass !== "All") params.glass = glass;
+  if (alcoholic !== "All") params.alcoholic = alcoholic === "Alcoholic";
   const query = new URLSearchParams(params).toString();
-  if (query) {
-    url += `&${query}`;
-  }
+  if (query) url += `&${query}`;
   const res = await axios.get(url);
   return res.data;
 }
 
 export default function HomePage() {
   const [searchTerm, setSearchTerm] = useState("");
-  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [glassFilter, setGlassFilter] = useState("All");
   const [alcoholicFilter, setAlcoholicFilter] = useState("All");
   const [favorites, setFavorites] = useState<number[]>([]);
   const [showFavorites, setShowFavorites] = useState(false);
+  const [selectedCocktailId, setSelectedCocktailId] = useState<number | null>(
+    null
+  );
+  const [page, setPage] = useState(1);
+  const perPage = 15;
+  const fullPerPage = 133;
+  const [sortOption, setSortOption] = useState("name-asc");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedSearchTerm(searchTerm);
-    }, 500);
-    return () => clearTimeout(handler);
-  }, [searchTerm]);
-
-  useEffect(() => {
-    const storedFavorites = localStorage.getItem("favoriteCocktails");
-    if (storedFavorites) {
-      setFavorites(JSON.parse(storedFavorites));
-    }
+    const stored = localStorage.getItem("favoriteCocktails");
+    if (stored) setFavorites(JSON.parse(stored));
   }, []);
 
   useEffect(() => {
     localStorage.setItem("favoriteCocktails", JSON.stringify(favorites));
   }, [favorites]);
 
-  const toggleFavorite = (cocktailId: number) => {
-    setFavorites((prevFavorites) =>
-      prevFavorites.includes(cocktailId)
-        ? prevFavorites.filter((id) => id !== cocktailId)
-        : [...prevFavorites, cocktailId]
+  const toggleFavorite = (id: number) => {
+    setFavorites((prev) =>
+      prev.includes(id) ? prev.filter((fav) => fav !== id) : [...prev, id]
     );
   };
-
-  const { data: glassesData } = useQuery({
-    queryKey: ["glasses"],
-    queryFn: async () => {
-      const res = await axios.get(
-        "https://cocktails.solvro.pl/api/v1/cocktails/glasses"
-      );
-      return res.data;
-    },
-  });
 
   const { data: categoriesData } = useQuery({
     queryKey: ["categories"],
@@ -99,128 +67,218 @@ export default function HomePage() {
     },
   });
 
+  const { data: glassesData } = useQuery({
+    queryKey: ["glasses"],
+    queryFn: async () => {
+      const res = await axios.get(
+        "https://cocktails.solvro.pl/api/v1/cocktails/glasses"
+      );
+      return res.data;
+    },
+  });
+
   const { data, error, isLoading } = useQuery({
     queryKey: [
       "cocktails",
-      debouncedSearchTerm,
       categoryFilter,
       glassFilter,
       alcoholicFilter,
+      searchTerm,
+      page,
     ],
     queryFn: () =>
       fetchCocktails(
-        debouncedSearchTerm,
         categoryFilter,
         glassFilter,
-        alcoholicFilter
+        alcoholicFilter,
+        searchTerm.trim() ? 1 : page,
+        searchTerm.trim() ? fullPerPage : perPage
       ),
   });
 
-  const cocktailsToDisplay =
-    showFavorites && data?.data
-      ? data.data.filter((cocktail: Cocktail) =>
-          favorites.includes(cocktail.id)
+  const cocktailsArray: Cocktail[] = Array.isArray(data)
+    ? data
+    : (data?.data ?? []);
+
+  const keywords = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
+
+  const cocktailsBySearch = keywords.length
+    ? cocktailsArray.filter((cocktail: Cocktail) =>
+        keywords.every((kw) =>
+          cocktail.name
+            .toLowerCase()
+            .split(/\s+/)
+            .some((word) => word.startsWith(kw))
         )
-      : data?.data || [];
+      )
+    : cocktailsArray;
+
+  const filteredCocktails = showFavorites
+    ? cocktailsBySearch.filter((cocktail) => favorites.includes(cocktail.id))
+    : cocktailsBySearch;
+
+  const sortedCocktails = [...filteredCocktails].sort((a, b) => {
+    if (sortOption === "name-asc") return a.name.localeCompare(b.name);
+    if (sortOption === "name-desc") return b.name.localeCompare(a.name);
+    if (sortOption === "category-asc")
+      return a.category.localeCompare(b.category);
+    if (sortOption === "category-desc")
+      return b.category.localeCompare(a.category);
+    return 0;
+  });
+
+  const cocktailsToDisplay = sortedCocktails;
+
+  const total = data?.total || cocktailsArray.length;
+  const totalPages = Math.ceil(total / perPage);
 
   return (
-    <main className="p-6">
-      <div className="flex flex-col sm:flex-row gap-4 mb-4 items-center">
+    <main className="p-4 md:p-8 bg-gray-50 min-h-screen">
+      <h1 className="text-4xl font-bold text-center mb-8">
+        Cocktail Explorer 🍹
+      </h1>
+
+      <div className="flex flex-col sm:flex-row gap-4 mb-6 items-center">
         <input
           ref={inputRef}
           type="text"
-          placeholder="Search cocktails"
-          className="px-3 py-2 border rounded"
+          placeholder="Search cocktails..."
+          className="flex-1 px-4 py-1.5 border rounded shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
+          onChange={(e) => {
+            setSearchTerm(e.target.value);
+            if (e.target.value.trim()) setPage(1);
+          }}
         />
-
         <select
-          className="px-3 py-2 border rounded"
+          className="px-4 py-2 border rounded shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           value={alcoholicFilter}
-          onChange={(e) => setAlcoholicFilter(e.target.value)}
+          onChange={(e) => {
+            setAlcoholicFilter(e.target.value);
+            setPage(1);
+          }}
         >
           <option value="All">All</option>
           <option value="Alcoholic">Alcoholic</option>
           <option value="Non alcoholic">Non alcoholic</option>
         </select>
-
         <select
-          className="px-3 py-2 border rounded"
+          className="px-4 py-2 border rounded shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
+          onChange={(e) => {
+            setCategoryFilter(e.target.value);
+            setPage(1);
+          }}
         >
-          <option value="All">All</option>
-          {categoriesData?.data?.map((cat: string) => (
-            <option key={cat} value={cat}>
-              {cat}
-            </option>
-          ))}
+          <option value="All">All Categories</option>
+          {(Array.isArray(categoriesData)
+            ? categoriesData
+            : (categoriesData?.data ?? [])
+          )
+            .sort()
+            .map((cat: string) => (
+              <option key={cat} value={cat}>
+                {cat}
+              </option>
+            ))}
         </select>
-
         <select
-          className="px-3 py-2 border rounded"
+          className="px-4 py-2 border rounded shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           value={glassFilter}
-          onChange={(e) => setGlassFilter(e.target.value)}
+          onChange={(e) => {
+            setGlassFilter(e.target.value);
+            setPage(1);
+          }}
         >
-          <option value="All">All</option>
-          {glassesData?.data?.map((glass: string) => (
-            <option key={glass} value={glass}>
-              {glass}
-            </option>
-          ))}
+          <option value="All">All Glasses</option>
+          {(Array.isArray(glassesData)
+            ? glassesData
+            : (glassesData?.data ?? [])
+          )
+            .sort()
+            .map((glass: string) => (
+              <option key={glass} value={glass}>
+                {glass}
+              </option>
+            ))}
         </select>
-
         <button
-          className={`px-3 py-2 border rounded ${
+          className={`px-4 py-1.5 border rounded shadow-sm ${
             showFavorites
-              ? "bg-red-600 text-white"
+              ? "bg-red-500 text-white"
               : "bg-gray-200 text-gray-800"
           }`}
           onClick={() => setShowFavorites((prev) => !prev)}
         >
-          {showFavorites ? "Favorites" : "Favorites"}
+          Favorites
         </button>
+        <select
+          className="px-4 py-2 border rounded shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          value={sortOption}
+          onChange={(e) => setSortOption(e.target.value)}
+        >
+          <option value="name-asc">Name (A-Z)</option>
+          <option value="name-desc">Name (Z-A)</option>
+          <option value="category-asc">Category (A-Z)</option>
+          <option value="category-desc">Category (Z-A)</option>
+        </select>
       </div>
 
-      {isLoading && <div>Loading cocktails...</div>}
-      {error && <div>Error loading cocktails</div>}
-      {data?.data && cocktailsToDisplay.length === 0 && (
-        <div>No cocktails found</div>
+      {isLoading && (
+        <div className="flex justify-center items-center">
+          <LoadingSpinner />
+        </div>
       )}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {cocktailsToDisplay.map((cocktail: Cocktail) => (
-          <div
-            key={cocktail.id}
-            className="border rounded p-4 flex flex-col items-center"
-          >
-            <div className="flex justify-between w-full text-lg mb-2 font-semibold">
-              <h2 className=" ">{cocktail.name}</h2>
-              <button
-                className={`rounded ${
-                  favorites.includes(cocktail.id)
-                  // ? "bg-red-500 text-white"
-                  // : "bg-gray-200 text-gray-800"
-                }`}
-                onClick={() => toggleFavorite(cocktail.id)}
-              >
-                {favorites.includes(cocktail.id) ? "❤️" : "🤍"}
-              </button>
-            </div>
-            <img
-              src={cocktail.imageUrl}
-              alt={cocktail.name}
-              className="w-full h-auto mb-2"
+      {error && (
+        <div className="text-center text-red-500">Error loading cocktails.</div>
+      )}
+      {!isLoading && cocktailsArray && cocktailsToDisplay.length === 0 && (
+        <div className="text-center text-gray-700">No cocktails found.</div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {cocktailsToDisplay.map((cocktail) => (
+          <div key={cocktail.id}>
+            <CocktailCard
+              cocktail={cocktail}
+              onClick={() => setSelectedCocktailId(cocktail.id)}
+              onToggleFavorite={toggleFavorite}
+              isFavorite={favorites.includes(cocktail.id)}
             />
-            <div className="flex text-sm text-gray-600">
-              <p className="">{cocktail.instructions?.slice(0, 50)}...</p>
-              <Link href={`/cocktail/${cocktail.id}`}>
-                <p className="text-gray-900">more</p>
-              </Link>
-            </div>
           </div>
         ))}
       </div>
+
+      {!searchTerm.trim() && (
+        <div className="flex justify-center items-center mt-4 gap-4">
+          <button
+            className="px-3 py-1.5 border rounded"
+            onClick={() => setPage((prev) => Math.max(prev - 1, 1))}
+            disabled={page === 1}
+          >
+            Prev
+          </button>
+          <span>Page {page}</span>
+          <button
+            className="px-3 py-1.5 border rounded"
+            onClick={() => {
+              if (cocktailsArray.length === perPage) {
+                setPage((prev) => prev + 1);
+              }
+            }}
+            disabled={cocktailsArray.length < perPage}
+          >
+            Next
+          </button>
+        </div>
+      )}
+
+      {selectedCocktailId && (
+        <CocktailModal
+          cocktailId={selectedCocktailId}
+          onClose={() => setSelectedCocktailId(null)}
+        />
+      )}
     </main>
   );
 }
